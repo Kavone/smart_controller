@@ -56,12 +56,11 @@ ISR(TIMER0_COMPB_vect, ISR_ALIASOF(TIMER0_COMPA_vect));
 ISR(TIMER0_COMPA_vect) {
     static int isr_count;
 
-    static int last_stable_a = 1;
+    static int last_a = 1;
     static int curr_a = 1;
     static int curr_a_stable_count;
 
-    static int curr_b = 1;
-    static int curr_b_stable_count;
+    static int initial_b;
 
     isr_count++;
 
@@ -74,8 +73,13 @@ ISR(TIMER0_COMPA_vect) {
         // A when B is low indicates clockwise motion while a rising
         // edge on A when B is high indicates counter-clockwise motion
 
-        // get current values and debounce them
+        // get value of B if we are just now starting to debounce A
         int val = digitalRead(BTN_ENA);
+        if ((curr_a_stable_count == 0) && (val == 1) && (last_a == 0)) {
+            initial_b = digitalRead(BTN_ENB);
+        }
+
+        // debounce A
         if (val != curr_a) {
             curr_a = val;
             curr_a_stable_count = 1;
@@ -90,24 +94,10 @@ ISR(TIMER0_COMPA_vect) {
             }
         }
 
-        val = digitalRead(BTN_ENB);
-        if (val != curr_b) {
-            curr_b = val;
-            curr_b_stable_count = 1;
-        }
-        else {
-            if ((curr_b_stable_count > 0)
-                  && (curr_b_stable_count < debounce_stable_count)) {
-                curr_b_stable_count++;
-            } else {
-                curr_b_stable_count = 0;
-            }
-        }
-
         // if values are stable and rising edge on A, update position
-        if ((curr_a_stable_count == 0) && (curr_b_stable_count == 0)) {
-            if ((last_stable_a == 0) && (curr_a == 1)) {
-                if (curr_b == 0) {
+        if (curr_a_stable_count == 0)  {
+            if ((last_a == 0) && (curr_a == 1)) {
+                if (initial_b == 0) {
                     increments++;
                     pos++;
                 }
@@ -117,7 +107,7 @@ ISR(TIMER0_COMPA_vect) {
                 }
             }
 
-            last_stable_a = curr_a;
+            last_a = curr_a;
         }
 
         // Now deal with the button press which simply resets the
@@ -128,6 +118,7 @@ ISR(TIMER0_COMPA_vect) {
             increments = 0;
             decrements = 0;
         }
+
 #ifdef __AVR_ATmega2560__
         val = digitalRead(RESET_SW);
         if (val == 0) {
