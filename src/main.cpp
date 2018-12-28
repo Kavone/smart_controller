@@ -105,6 +105,12 @@ ISR(TIMER0_COMPA_vect) {
                     decrements++;
                     pos--;
                 }
+                if (pos < 0) {
+                    pos += 20;
+                }
+                else if (pos > 19) {
+                    pos -= 20;
+                }
             }
 
             last_a = curr_a;
