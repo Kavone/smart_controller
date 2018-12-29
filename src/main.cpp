@@ -73,9 +73,10 @@ ISR(TIMER0_COMPA_vect) {
         // A when B is low indicates clockwise motion while a rising
         // edge on A when B is high indicates counter-clockwise motion
 
-        // get value of B if we are just now starting to debounce A
+        // get value of B the first time we detect a change on A
+        // we assume B is stable by the time A begins to change
         int val = digitalRead(BTN_ENA);
-        if ((curr_a_stable_count == 0) && (val == 1) && (last_a == 0)) {
+        if ((curr_a_stable_count == 0) && (val != last_a)) {
             initial_b = digitalRead(BTN_ENB);
         }
 
