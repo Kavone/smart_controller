@@ -1,19 +1,22 @@
 #include <Arduino.h>
 #include <LiquidCrystal.h>
 
+//******************************************************************************
+// User adjustable parameters
+
+// LCD pin connections
 //        E1_4     E1_3     E1_5     E1_6     E1_7     E1_8
 #ifdef __AVR_ATmega2560__
-const int rs = 16, en = 17, d4 = 23, d5 = 25, d6 = 27, d7 = 29;
+const int RS = 16, EN = 17, D4 = 23, D5 = 25, D6 = 27, D7 = 29;
 #else
-const int rs = 2, en = 3, d4 = 4, d5 = 5, d6 = 6, d7 = 7;
+const int RS = 2, EN = 3, D4 = 4, D5 = 5, D6 = 6, D7 = 7;
 #endif
-LiquidCrystal lcd(rs, en, d4, d5, d6, d7);
 
 //        E1_1
 #ifdef __AVR_ATmega2560__
-const int buzzer = 37;
+const int BUZZER = 37;
 #else
-const int buzzer = 11;
+const int BUZZER = 11;
 #endif
 
 // Rotary encoder
@@ -26,9 +29,19 @@ const int BTN_ENC = 35, BTN_ENA = 31, BTN_ENB = 33;
 const int BTN_ENC = 10, BTN_ENA = 8, BTN_ENB = 9;
 #endif
 
-// E2_8
+// number of "stopping points" in a full revolution of the encoder
+const int num_detents_per_revolution = 20;
+
+// number of samples with constant signal value to be considered "debounced"
+const int debounce_stable_count = 4;
+
+// time between interrupts for monitoring signal value
+// resolution of the timer is 4us so best to make this a multiple of 4
+#define ISR_INTERVAL_us 256
+
+// reset push button
 #ifdef __AVR_ATmega2560__
-const int RESET_SW = 41;
+const int BTN_RESET = 41;
 #endif
 
 // steppers
@@ -40,19 +53,32 @@ const int E0_STEP_PIN = 26, E0_DIR_PIN = 28, E0_ENABLE_PIN = 24, E0_CS_PIN = 42;
 const int E1_STEP_PIN = 36, E1_DIR_PIN = 34, E1_ENABLE_PIN = 30, E1_CS_PIN = 44;
 #endif
 
-const int debounce_stable_count = 4;
+//******************************************************************************
+// calculated parameters which should not need user adjustment
+
+// assume a rising and folling edge of each button happens between detents
+const int num_edges_per_revolution = 2 * num_detents_per_revolution;
+
+// Number of timer ticks between interrupts.  Each tick is 4us
+#define OCR0A_INCR (ISR_INTERVAL_us / 4)
+
 volatile int pos;
 volatile int increments;
 volatile int decrements;
 volatile long unsigned total_isr_count;
 volatile long unsigned total_isr_time;
-#define OCR0A_INCR 64
 
+LiquidCrystal lcd(RS, EN, D4, D5, D6, D7);
 
 /*
  * TIMER0_COMPA_vect
  * ISR triggered by timer0 where inputs are read and debounced.
+ * In order to get interrupts at a rate greater than 1 ms (default for timer0),
+ * but not require an additional timer and not disturb the timer0 overflow rate
+ * (because that is used by default libraries), it makes use of the timer
+ * compare interrupt and adjusts the comparison value within the ISR.
  */
+
 ISR(TIMER0_COMPA_vect) {
     static int last_a = 1;
     static int curr_a = 1;
@@ -66,12 +92,6 @@ ISR(TIMER0_COMPA_vect) {
     total_isr_count++;
     OCR0A = (OCR0A + OCR0A_INCR) & 0xff;
 
-    // First deal with the rotary encoder
-    // This is done by checking the value of button B when
-    // a rising edge on button A is found.  A rising edge on
-    // A when B is low indicates clockwise motion while a rising
-    // edge on A when B is high indicates counter-clockwise motion
-
     // get value of B the first time we detect a change on A
     // we assume B is stable by the time A begins to change
     int val = digitalRead(BTN_ENA);
@@ -84,31 +104,34 @@ ISR(TIMER0_COMPA_vect) {
         curr_a = val;
         curr_a_stable_count = 1;
     } else {
-        if ((curr_a_stable_count > 0) &&
-            (curr_a_stable_count < debounce_stable_count)) {
+        if (curr_a_stable_count > 0) {
             curr_a_stable_count++;
         }
     }
 
-    // if values are stable and rising edge on A, update position
+    // if values are stable, adjust rotary encoder position
+    // B low on rising edge of A indicates clockwise motion while a
+    // B high on rising edge of A indicates counter-clockwise motion.
+    // B low on falling edge on A indicates counter clockwise motion
+    // B high on falling edge of A indicates clockwise motion
     if (curr_a_stable_count == debounce_stable_count) {
-        if ((last_a == 0) && (curr_a == 1)) {
-            if (initial_b == 0) {
-                increments++;
-                pos++;
-            } else {
-                decrements++;
+        if (last_a != curr_a) {
+            if (curr_a == initial_b) {
                 pos--;
+                if (pos < 0) {
+                    pos += num_edges_per_revolution;
+                }
+            } else {
+                pos++;
+                if (pos >= num_edges_per_revolution) {
+                    pos -= num_edges_per_revolution;
+                }
             }
-            if (pos < 0) {
-                pos += 20;
-            } else if (pos > 19) {
-                pos -= 20;
-            }
+
+            last_a = curr_a;
         }
 
         curr_a_stable_count = 0;
-        last_a = curr_a;
     }
 
     // Now deal with the button press which simply resets the
@@ -161,15 +184,16 @@ void setup() {
     // set up a recuring timer interrupt
     cli();                  // disable interrupts
 
+    // Turn off PWM modes of timer0 because such modes prevent the
+    // immediate re-assignment of compare values
     TCCR0A &= ~((1 << WGM01) | (1 << WGM00));  // Turn off PWM modes
     TCCR0B &= ~(1 << WGM02);
 
-    OCR0A = 1;              // set timer0/A to generate output when it
-                            // hits this value.  The ISR will adjust this
-                            // value to to potentially produce multiple
-                            // interrupts during the normal 0 -> FF count
-                            // sequence which takes 1024us
-    TIMSK0 |= _BV(OCIE0A);  // Set the compare A output to cause an interrupt
+    OCR0A = 1;              // Set the timer0 compare value.
+                            // The ISR will adjust this value to to potentially
+                            // produce multiple interrupts during the normal
+                            // 0 -> FF count sequence which takes 1024us
+    TIMSK0 |= _BV(OCIE0A);  // Enable the timer compare interrupt
 
     sei();                  // enable interrupts
 }
