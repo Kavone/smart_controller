@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <Wire.h>
 #include <LiquidCrystal.h>
 
 //******************************************************************************
@@ -35,22 +36,13 @@ const int num_detents_per_revolution = 20;
 // number of samples with constant signal value to be considered "debounced"
 const int debounce_stable_count = 4;
 
-// time between interrupts for monitoring signal value
-// resolution of the timer is 4us so best to make this a multiple of 4
+// time between interrupts for monitoring signal values
+// resolution of the timer is 4us so make this >= 4 and a multiple of 4
 #define ISR_INTERVAL_us 256
 
 // reset push button
 #ifdef __AVR_ATmega2560__
 const int BTN_RESET = 41;
-#endif
-
-// steppers
-#ifdef __AVR_ATmega2560__
-const int  X_STEP_PIN = 54,  X_DIR_PIN = 55,  X_ENABLE_PIN = 38,  X_CS_PIN = 53;
-const int  Y_STEP_PIN = 60,  Y_DIR_PIN =  1,  Y_ENABLE_PIN = 56,  Y_CS_PIN = 49;
-const int  Z_STEP_PIN = 46,  Z_DIR_PIN = 48,  Z_ENABLE_PIN = 62,  Z_CS_PIN = 40;
-const int E0_STEP_PIN = 26, E0_DIR_PIN = 28, E0_ENABLE_PIN = 24, E0_CS_PIN = 42;
-const int E1_STEP_PIN = 36, E1_DIR_PIN = 34, E1_ENABLE_PIN = 30, E1_CS_PIN = 44;
 #endif
 
 //******************************************************************************
@@ -90,6 +82,8 @@ ISR(TIMER0_COMPA_vect) {
 
     isr_start_time = micros();
     total_isr_count++;
+    
+    // set the time of the next interrupt
     OCR0A = (OCR0A + OCR0A_INCR) & 0xff;
 
     // get value of B the first time we detect a change on A
@@ -110,27 +104,28 @@ ISR(TIMER0_COMPA_vect) {
     }
 
     // if values are stable, adjust rotary encoder position
-    // B low on rising edge of A indicates clockwise motion while a
-    // B high on rising edge of A indicates counter-clockwise motion.
-    // B low on falling edge on A indicates counter clockwise motion
+    // B low on rising edge of A indicates clockwise motion while
+    // B high on rising edge of A indicates counter clockwise motion.
+    // B low on falling edge on A indicates counter clockwise motion while
     // B high on falling edge of A indicates clockwise motion
     if (curr_a_stable_count == debounce_stable_count) {
         if (last_a != curr_a) {
             if (curr_a == initial_b) {
                 pos--;
+                decrements++;
                 if (pos < 0) {
                     pos += num_edges_per_revolution;
                 }
             } else {
                 pos++;
+                increments++;
                 if (pos >= num_edges_per_revolution) {
                     pos -= num_edges_per_revolution;
                 }
             }
-
-            last_a = curr_a;
         }
 
+        last_a = curr_a;
         curr_a_stable_count = 0;
     }
 
@@ -160,19 +155,7 @@ void setup() {
     Serial.begin(9600);
     lcd.begin(20, 4);
 
-    // set up stepper motor drivers
-#ifdef __AVR_ATmega2560__
-    pinMode(X_STEP_PIN, OUTPUT);
-    pinMode(X_DIR_PIN, OUTPUT);
-    pinMode(X_ENABLE_PIN, OUTPUT);
-    pinMode(X_CS_PIN, OUTPUT);
-    digitalWrite(X_CS_PIN, LOW);
-    digitalWrite(X_ENABLE_PIN, LOW);
-    digitalWrite(X_STEP_PIN, LOW);
-    digitalWrite(X_DIR_PIN, LOW);
-#endif
-
-    // Add a pullup to all buttons
+    // Add a pullup to the buttons
     pinMode(BTN_ENA, INPUT_PULLUP);
     pinMode(BTN_ENB, INPUT_PULLUP);
     pinMode(BTN_ENC, INPUT_PULLUP);
@@ -182,11 +165,11 @@ void setup() {
 #endif
 
     // set up a recuring timer interrupt
-    cli();                  // disable interrupts
+    cli();  // disable interrupts
 
     // Turn off PWM modes of timer0 because such modes prevent the
-    // immediate re-assignment of compare values
-    TCCR0A &= ~((1 << WGM01) | (1 << WGM00));  // Turn off PWM modes
+    // immediate re-assignment of compare values to OCR0A
+    TCCR0A &= ~((1 << WGM01) | (1 << WGM00));
     TCCR0B &= ~(1 << WGM02);
 
     OCR0A = 1;              // Set the timer0 compare value.
@@ -195,37 +178,13 @@ void setup() {
                             // 0 -> FF count sequence which takes 1024us
     TIMSK0 |= _BV(OCIE0A);  // Enable the timer compare interrupt
 
-    sei();                  // enable interrupts
+    sei();  // enable interrupts
 }
 
 void loop() {
     static unsigned loop_count;
     loop_count++;
 
-#ifdef __AVR_ATmega2560__ 
-    static int last_pos = 0;
-    if (last_pos < pos) {
-        digitalWrite(X_DIR_PIN, LOW);
-    }
-    else if (last_pos > pos) {
-        digitalWrite(X_DIR_PIN, HIGH);
-    }
-
-    while (last_pos != pos) {
-        for (int i = 0; i < 100; i++) {
-            digitalWrite(X_STEP_PIN, HIGH);
-            delayMicroseconds(100);
-            digitalWrite(X_STEP_PIN, LOW);
-            delayMicroseconds(10);
-        }
-        if (last_pos < pos) {
-            last_pos++;
-        }
-        else {
-            last_pos--;
-        }
-    }
-#endif
 
     lcd.clear();
     lcd.print("Pos: ");
